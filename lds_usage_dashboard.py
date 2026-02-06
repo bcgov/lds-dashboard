@@ -33,6 +33,18 @@ PATH = r"\\objectstore2.nrs.bcgov\GSS_Share\authorizations\logs\lds_tool_logs"
 OUTPUT_FILE = r"W:\srm\gss\sandbox\mlabiadh\workspace\20260130_lds_logs\dashboard.html"
 
 # =============================================================================
+# USER CONFIGURATION
+# =============================================================================
+# Developer IDIR(s) to exclude from all stats (test runs)
+EXCLUDED_USERS = {'MLABIADH'}
+
+# GIS specialists — everyone else is categorized as "Non-GIS"
+GIS_USERS = {'MSEASTWO', 'ALLSHEPH', 'SEPARSON', 'AERASMUS', 'JBUSSE'}
+
+GROUP_GIS = 'GIS Users'
+GROUP_NON_GIS = 'Non-GIS Users'
+
+# =============================================================================
 # COLOR SCHEME
 # =============================================================================
 COLORS = {
@@ -210,17 +222,20 @@ def _clean_error_message(msg):
 # METRICS CALCULATION
 # =============================================================================
 def clean_username(username):
-    """Remove IDIR\\ prefix from username."""
+    """Remove IDIR\\ prefix from username and normalize to uppercase."""
     if isinstance(username, str):
-        return username.replace('IDIR\\', '').replace('IDIR/', '')
+        return username.replace('IDIR\\', '').replace('IDIR/', '').upper()
     return username
+
+def assign_user_group(clean_user):
+    """Assign user to GIS or Non-GIS group."""
+    if isinstance(clean_user, str) and clean_user.upper() in GIS_USERS:
+        return GROUP_GIS
+    return GROUP_NON_GIS
 
 def calculate_metrics(df):
     """Calculate all metrics from dataframe."""
     total = len(df)
-
-    # Clean usernames for counting
-    df['clean_user'] = df['user_os'].apply(clean_username)
 
     # Duration stats by AST
     ast_true = df[df['ast'] == True]['duration_seconds']
@@ -235,10 +250,18 @@ def calculate_metrics(df):
     has_error = df[error_col].astype(str).str.strip().str.len() > 0
     has_error = has_error & (df[error_col].notna())
 
+    # Group counts
+    gis_runs = len(df[df['user_group'] == GROUP_GIS])
+    non_gis_runs = len(df[df['user_group'] == GROUP_NON_GIS])
+
     return {
         'total_runs': total,
         'unique_machines': df['machine'].nunique(),
         'unique_users': df['clean_user'].nunique(),
+        'gis_users': df.loc[df['user_group'] == GROUP_GIS, 'clean_user'].nunique(),
+        'non_gis_users': df.loc[df['user_group'] == GROUP_NON_GIS, 'clean_user'].nunique(),
+        'gis_runs': gis_runs,
+        'non_gis_runs': non_gis_runs,
         # Duration with AST (median only)
         'median_duration_with_ast': ast_true.median() if len(ast_true) > 0 else 0,
         # Duration without AST (median only)
@@ -271,27 +294,60 @@ def get_chart_layout(title="", height=300):
     }
 
 def create_daily_trend(df):
-    daily = df.groupby('date').size().reset_index(name='runs')
-    fig = px.line(daily, x='date', y='runs', markers=True)
-    fig.update_traces(line_color=COLORS['accent'], marker_color=COLORS['accent'])
+    daily = df.groupby(['date', 'user_group']).size().reset_index(name='runs')
+    fig = go.Figure()
+    for group, color in [(GROUP_GIS, COLORS['chart'][3]), (GROUP_NON_GIS, COLORS['chart'][5])]:
+        grp = daily[daily['user_group'] == group]
+        fig.add_trace(go.Scatter(
+            x=grp['date'], y=grp['runs'], mode='lines+markers',
+            name=group, line=dict(color=color), marker=dict(color=color)
+        ))
     fig.update_layout(**get_chart_layout('Daily Run Trend'))
+    fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5))
     return fig
 
-def create_user_distribution(df):
-    """Bar chart of runs by user (top users)."""
-    df['clean_user'] = df['user_os'].apply(clean_username)
-    user_counts = df['clean_user'].value_counts().head(10).reset_index()
+def create_user_distribution_gis(df):
+    """Bar chart of runs by GIS users."""
+    gis_df = df[df['user_group'] == GROUP_GIS]
+    if gis_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="No GIS user runs", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
+        return fig
+    user_counts = gis_df['clean_user'].value_counts().head(10).reset_index()
     user_counts.columns = ['user', 'count']
-    fig = px.bar(user_counts, x='count', y='user', orientation='h', color_discrete_sequence=[COLORS['chart'][1]])
-    fig.update_layout(**get_chart_layout('Runs by User', height=320))
+    fig = px.bar(user_counts, x='count', y='user', orientation='h',
+                 color_discrete_sequence=[COLORS['chart'][3]])
+    fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+    return fig
+
+def create_user_distribution_non_gis(df):
+    """Bar chart of runs by Non-GIS users."""
+    non_gis_df = df[df['user_group'] == GROUP_NON_GIS]
+    if non_gis_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="No Non-GIS user runs", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
+        return fig
+    user_counts = non_gis_df['clean_user'].value_counts().head(10).reset_index()
+    user_counts.columns = ['user', 'count']
+    fig = px.bar(user_counts, x='count', y='user', orientation='h',
+                 color_discrete_sequence=[COLORS['chart'][5]])
+    fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
     fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     return fig
 
 def create_region_distribution(df):
-    region_counts = df['ast_region'].value_counts().reset_index()
-    region_counts.columns = ['region', 'count']
-    fig = px.bar(region_counts, x='count', y='region', orientation='h', color_discrete_sequence=[COLORS['accent']])
+    region_counts = df.groupby(['ast_region', 'user_group']).size().reset_index(name='count')
+    color_map = {GROUP_GIS: COLORS['chart'][3], GROUP_NON_GIS: COLORS['chart'][5]}
+    fig = px.bar(region_counts, x='count', y='ast_region', orientation='h',
+                 color='user_group', color_discrete_map=color_map, barmode='stack')
     fig.update_layout(**get_chart_layout('Runs by Region'))
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, title_text=''),
+    )
     return fig
 
 def create_duration_by_region(df):
@@ -377,13 +433,17 @@ def create_error_messages(df):
       - Cleaned/normalized messages so identical root causes group together
     
     Bars are color-coded by the stage where the error occurred.
+    Hover shows GIS vs Non-GIS breakdown.
     """
     error_col = 'detail_error_message' if 'detail_error_message' in df.columns else 'error_message'
     stage_col = 'detail_error_stage' if 'detail_error_stage' in df.columns else None
 
     # Filter to rows with non-empty error messages
     mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
-    error_df = df.loc[mask, [error_col, stage_col]].copy() if stage_col else df.loc[mask, [error_col]].copy()
+    cols = [error_col, 'user_group']
+    if stage_col:
+        cols.append(stage_col)
+    error_df = df.loc[mask, cols].copy()
 
     if len(error_df) == 0:
         fig = go.Figure()
@@ -396,9 +456,11 @@ def create_error_messages(df):
         # Group by message, pick the most common stage for each message
         grouped = error_df.groupby(error_col).agg(
             count=(error_col, 'size'),
-            stage=(stage_col, lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'unknown')
+            stage=(stage_col, lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'unknown'),
+            gis_count=('user_group', lambda x: (x == GROUP_GIS).sum()),
+            non_gis_count=('user_group', lambda x: (x == GROUP_NON_GIS).sum()),
         ).reset_index()
-        grouped.columns = ['message', 'count', 'stage']
+        grouped.columns = ['message', 'count', 'stage', 'gis_count', 'non_gis_count']
         grouped = grouped.sort_values('count', ascending=False).head(8)
 
         # Color map for stages
@@ -426,7 +488,9 @@ def create_error_messages(df):
                 hovertemplate=(
                     f"<b>{row['message']}</b><br>"
                     f"Stage: {row['stage']}<br>"
-                    f"Count: {row['count']}<extra></extra>"
+                    f"Count: {row['count']}<br>"
+                    f"GIS: {row['gis_count']} | Non-GIS: {row['non_gis_count']}"
+                    f"<extra></extra>"
                 ),
                 text=[f"{row['count']}  [{row['stage']}]"],
                 textposition='outside',
@@ -501,6 +565,19 @@ def create_error_by_stage(df):
     return fig
 
 
+def create_user_group_split(df):
+    """Donut chart showing % of runs by GIS vs Non-GIS users."""
+    group_counts = df['user_group'].value_counts().reset_index()
+    group_counts.columns = ['group', 'count']
+    color_map = {GROUP_GIS: COLORS['chart'][3], GROUP_NON_GIS: COLORS['chart'][5]}
+    colors = [color_map.get(g, COLORS['text_muted']) for g in group_counts['group']]
+    fig = px.pie(group_counts, values='count', names='group',
+                 color_discrete_sequence=colors, hole=0.4)
+    fig.update_layout(**get_chart_layout('Runs by User Group', height=320))
+    fig.update_traces(textposition='inside', textinfo='percent+label')
+    return fig
+
+
 def create_feature_adoption(df):
     total = len(df)
     features = pd.DataFrame({
@@ -541,13 +618,15 @@ def generate_html(df, metrics):
     # Create all charts
     charts = {
         'daily_trend': create_daily_trend(df).to_html(full_html=False, include_plotlyjs=False),
-        'user_dist': create_user_distribution(df).to_html(full_html=False, include_plotlyjs=False),
+        'user_dist_gis': create_user_distribution_gis(df).to_html(full_html=False, include_plotlyjs=False),
+        'user_dist_non_gis': create_user_distribution_non_gis(df).to_html(full_html=False, include_plotlyjs=False),
         'region_dist': create_region_distribution(df).to_html(full_html=False, include_plotlyjs=False),
         'duration_region': create_duration_by_region(df).to_html(full_html=False, include_plotlyjs=False),
         'peak_hours': create_peak_hours(df).to_html(full_html=False, include_plotlyjs=False),
         'status_dist': create_status_distribution(df).to_html(full_html=False, include_plotlyjs=False),
         'error_msgs': create_error_messages(df).to_html(full_html=False, include_plotlyjs=False),
         'error_stage': create_error_by_stage(df).to_html(full_html=False, include_plotlyjs=False),
+        'user_group_split': create_user_group_split(df).to_html(full_html=False, include_plotlyjs=False),
         'feature_adoption': create_feature_adoption(df).to_html(full_html=False, include_plotlyjs=False),
         'prov_ref_region': create_prov_ref_by_region(df).to_html(full_html=False, include_plotlyjs=False),
     }
@@ -751,18 +830,27 @@ def generate_html(df, metrics):
             <div class="metric-card">
                 <div class="label">Unique Users</div>
                 <div class="value">{metrics['unique_users']}</div>
-                <div class="card-subtitle">Active users</div>
+                <div class="card-subtitle">{metrics['gis_users']} GIS &bull; {metrics['non_gis_users']} Non-GIS</div>
             </div>
             <div class="metric-card">
-                <div class="label">Unique Machines</div>
-                <div class="value">{metrics['unique_machines']}</div>
-                <div class="card-subtitle">Active devices</div>
+                <div class="label">GIS Runs</div>
+                <div class="value">{metrics['gis_runs']}</div>
+                <div class="card-subtitle">GIS specialist runs</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Non-GIS Runs</div>
+                <div class="value">{metrics['non_gis_runs']}</div>
+                <div class="card-subtitle">Non-GIS user runs</div>
             </div>
         </div>
         <div class="charts-grid charts-grid-3">
             <div class="chart-container">{charts['daily_trend']}</div>
-            <div class="chart-container">{charts['user_dist']}</div>
             <div class="chart-container">{charts['region_dist']}</div>
+            <div class="chart-container">{charts['user_group_split']}</div>
+        </div>
+        <div class="charts-grid" style="margin-top: 16px;">
+            <div class="chart-container">{charts['user_dist_gis']}</div>
+            <div class="chart-container">{charts['user_dist_non_gis']}</div>
         </div>
     </section>
     
@@ -866,6 +954,22 @@ if __name__ == '__main__':
     
     # Load summary and detail data
     df_summary, df_detail = load_data()
+    
+    # Clean usernames: strip IDIR prefix, normalize to uppercase
+    df_summary['clean_user'] = df_summary['user_os'].apply(clean_username)
+    
+    # Exclude developer test runs
+    before = len(df_summary)
+    df_summary = df_summary[~df_summary['clean_user'].isin(EXCLUDED_USERS)].copy()
+    excluded = before - len(df_summary)
+    if excluded > 0:
+        print(f"\n✓ Excluded {excluded} developer test runs ({', '.join(EXCLUDED_USERS)})")
+    
+    # Assign user groups (GIS vs Non-GIS)
+    df_summary['user_group'] = df_summary['clean_user'].apply(assign_user_group)
+    gis_n = (df_summary['user_group'] == GROUP_GIS).sum()
+    non_gis_n = (df_summary['user_group'] == GROUP_NON_GIS).sum()
+    print(f"✓ User groups: {gis_n} GIS runs, {non_gis_n} Non-GIS runs")
     
     # Enrich error messages from detail logs
     df = enrich_errors_from_detail(df_summary, df_detail)
