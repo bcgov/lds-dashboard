@@ -1,10 +1,23 @@
 """
-LDS Tool Usage Dashboard - Static HTML Generator
+Tool Usage Dashboard - Static HTML Generator
 Generates a standalone HTML file with interactive Plotly charts.
+Can be hosted on GitHub Pages for free.
+
+To use:
+    1. pip install pandas plotly
+    2. Update PATH to your JSONL logs location
+    3. python lds_usage_dashboard.py
+    4. Upload the generated 'dashboard.html' to GitHub Pages
 
 Reads all monthly JSONL files matching *_summary.jsonl and *_detail.jsonl patterns.
 Detail logs are joined by run_id to enrich error messages beyond what the summary captures.
 
+GitHub Pages Setup:
+    1. Create a repository (or use existing one)
+    2. Go to Settings > Pages
+    3. Set source to 'main' branch and '/ (root)' folder
+    4. Upload dashboard.html (rename to index.html for auto-loading)
+    5. Your dashboard will be at: https://yourusername.github.io/reponame/
 """
 
 import os
@@ -173,6 +186,79 @@ def enrich_errors_from_detail(df_summary, df_detail):
     return df_summary
 
 
+def enrich_ast_duration(df_summary, df_detail):
+    """
+    Compute actual AST processing duration from detail-log timestamps.
+
+    The summary log's duration_seconds and timestamp_end are written BEFORE
+    AST starts (by design — so LDS success is captured even if AST takes 40+ min).
+    The actual AST duration is only available in the detail log, where the
+    ast_execution stage has:
+      - A "Starting stage: ast_execution" record (always present for AST runs)
+      - An "AST completed successfully" record (present after the fix to
+        lands_authorization_v1.py that explicitly logs completion)
+      - Or an "AST failed..." ERROR record (captured via the UsageLoggingAdapter
+        which forwards WARNING+ level messages)
+
+    This function computes AST duration only for SUCCESSFUL AST runs — i.e.
+    runs where the last ast_execution detail record is an INFO-level success
+    message, not an ERROR.
+
+    New columns added to df_summary:
+      - ast_duration_seconds : float  – AST processing time (NaN if not available)
+      - ast_completed        : bool   – True only if AST completed successfully with timing
+    """
+    df_summary['ast_duration_seconds'] = float('nan')
+    df_summary['ast_completed'] = False
+
+    if df_detail.empty:
+        return df_summary
+
+    # Filter to ast_execution stage records
+    ast_records = df_detail[df_detail['stage'] == 'ast_execution'].copy()
+    if ast_records.empty:
+        return df_summary
+
+    ast_records['timestamp'] = pd.to_datetime(ast_records['timestamp'])
+
+    # For each run_id, check if AST completed successfully
+    grouped = ast_records.groupby('run_id')
+
+    durations = {}
+    completed_runs = set()
+    for run_id, grp in grouped:
+        grp_sorted = grp.sort_values('timestamp')
+        if len(grp_sorted) < 2:
+            continue  # Only "Starting stage" — no end record, skip
+
+        last_record = grp_sorted.iloc[-1]
+
+        # Only count successful AST completions (not failures)
+        if last_record['level'] == 'ERROR':
+            continue
+
+        start = grp_sorted.iloc[0]['timestamp']
+        end = last_record['timestamp']
+        dur = (end - start).total_seconds()
+        durations[run_id] = dur
+        completed_runs.add(run_id)
+
+    if durations:
+        dur_series = pd.Series(durations, name='ast_duration_seconds')
+        df_summary = df_summary.set_index('run_id')
+        df_summary['ast_duration_seconds'] = dur_series
+        df_summary['ast_completed'] = df_summary.index.isin(completed_runs)
+        df_summary = df_summary.reset_index()
+
+        n_timed = len(durations)
+        n_ast = (df_summary['ast'] == True).sum()
+        print(f"\n✓ AST duration enrichment: {n_timed}/{n_ast} AST runs completed successfully with timing")
+    else:
+        print(f"\n! No successful AST runs with timing data found in detail logs")
+
+    return df_summary
+
+
 def _clean_error_message(msg):
     """
     Normalize error messages for grouping.
@@ -225,8 +311,19 @@ def calculate_metrics(df):
     total = len(df)
 
     # Duration stats by AST
-    ast_true = df[df['ast'] == True]['duration_seconds']
+    # Without AST: all non-AST runs
     ast_false = df[df['ast'] == False]['duration_seconds']
+    # With AST: use ast_duration_seconds (from detail logs) where available,
+    # otherwise fall back to summary duration_seconds for completed AST runs.
+    # ast_duration_seconds captures actual AST processing time computed from
+    # the detail log stage timestamps (start → end of ast_execution stage).
+    if 'ast_duration_seconds' in df.columns:
+        ast_true = df.loc[
+            (df['ast'] == True) & (df['ast_completed'] == True),
+            'ast_duration_seconds'
+        ].dropna()
+    else:
+        ast_true = df[(df['ast'] == True) & (df['status'] == 'success')]['duration_seconds']
 
     # Date range
     date_min = df['timestamp_start'].min().strftime('%Y-%m-%d')
@@ -241,6 +338,17 @@ def calculate_metrics(df):
     gis_runs = len(df[df['user_group'] == GROUP_GIS])
     non_gis_runs = len(df[df['user_group'] == GROUP_NON_GIS])
 
+    # P90 duration (all runs)
+    p90_duration = df['duration_seconds'].quantile(0.90) if total > 0 else 0
+
+    # AST success rate (among runs that requested AST)
+    ast_requested = len(df[df['ast'] == True])
+    if 'ast_completed' in df.columns:
+        ast_succeeded = df.loc[df['ast'] == True, 'ast_completed'].sum()
+    else:
+        ast_succeeded = len(df[(df['ast'] == True) & (df['status'] == 'success')])
+    ast_success_rate = (ast_succeeded / ast_requested * 100) if ast_requested > 0 else 0
+
     return {
         'total_runs': total,
         'unique_machines': df['machine'].nunique(),
@@ -249,10 +357,15 @@ def calculate_metrics(df):
         'non_gis_users': df.loc[df['user_group'] == GROUP_NON_GIS, 'clean_user'].nunique(),
         'gis_runs': gis_runs,
         'non_gis_runs': non_gis_runs,
-        # Duration with AST (median only)
-        'median_duration_with_ast': ast_true.median() if len(ast_true) > 0 else 0,
-        # Duration without AST (median only)
+        # Median pipeline duration (without AST)
         'median_duration_without_ast': ast_false.median() if len(ast_false) > 0 else 0,
+        # Median AST processing time (completed AST runs only, from detail logs)
+        'median_duration_with_ast': ast_true.median() if len(ast_true) > 0 else 0,
+        'ast_completed_count': int(ast_succeeded),
+        'ast_requested_count': ast_requested,
+        'ast_success_rate': ast_success_rate,
+        # P90 duration (all runs)
+        'p90_duration': p90_duration,
         'peak_hour': df['hour'].mode().iloc[0] if len(df['hour'].mode()) > 0 else 0,
         'busiest_day': df.groupby('date').size().idxmax(),
         'success_rate': len(df[df['status'] == 'success']) / total * 100,
@@ -337,67 +450,108 @@ def create_region_distribution(df):
     )
     return fig
 
-def create_duration_by_region(df):
-    """Bar chart showing median duration by region, split by AST selection."""
-    # Calculate median duration per region for AST and non-AST
-    regions = df['ast_region'].unique()
+def create_weekly_duration_trend(df):
+    """Line chart showing weekly median duration over time.
     
-    data = []
-    for region in regions:
-        region_data = df[df['ast_region'] == region]
-        
-        # Without AST
-        no_ast = region_data[region_data['ast'] == False]['duration_seconds']
-        if len(no_ast) > 0:
-            data.append({'region': region, 'type': 'Without AST', 'median_duration': no_ast.median()})
-        
-        # With AST
-        with_ast = region_data[region_data['ast'] == True]['duration_seconds']
-        if len(with_ast) > 0:
-            data.append({'region': region, 'type': 'With AST', 'median_duration': with_ast.median()})
-    
-    plot_df = pd.DataFrame(data)
-    
+    For non-AST runs, uses the summary duration_seconds (full pipeline time).
+    For AST runs, uses ast_duration_seconds computed from detail log timestamps
+    (actual AST processing time), which is only available for runs where the
+    detail log captured both start and end of the ast_execution stage.
+    """
+    df_copy = df.copy()
+    df_copy['week'] = df_copy['timestamp_start'].dt.to_period('W').apply(lambda r: r.start_time)
+
     fig = go.Figure()
-    
-    # Add bars for Without AST
-    no_ast_df = plot_df[plot_df['type'] == 'Without AST']
-    fig.add_trace(go.Bar(
-        name='Without AST',
-        y=no_ast_df['region'],
-        x=no_ast_df['median_duration'],
-        orientation='h',
-        marker_color=COLORS['chart'][1],
-        text=[f"{v:.0f}s" for v in no_ast_df['median_duration']],
-        textposition='outside'
+
+    # Without AST — pipeline duration
+    no_ast = df_copy[df_copy['ast'] == False].groupby('week')['duration_seconds'].median().reset_index()
+    no_ast.columns = ['week', 'median_duration']
+    fig.add_trace(go.Scatter(
+        x=no_ast['week'], y=no_ast['median_duration'], mode='lines+markers',
+        name='Pipeline (no AST)', line=dict(color=COLORS['chart'][1]),
+        marker=dict(color=COLORS['chart'][1])
     ))
-    
-    # Add bars for With AST
-    with_ast_df = plot_df[plot_df['type'] == 'With AST']
-    fig.add_trace(go.Bar(
-        name='With AST',
-        y=with_ast_df['region'],
-        x=with_ast_df['median_duration'],
-        orientation='h',
-        marker_color=COLORS['chart'][0],
-        text=[f"{v:.0f}s" for v in with_ast_df['median_duration']],
-        textposition='outside'
-    ))
-    
-    fig.update_layout(**get_chart_layout('Median Duration by Region', height=320))
+
+    # With AST — actual AST duration from detail logs (where available)
+    if 'ast_duration_seconds' in df_copy.columns:
+        with_ast = df_copy[(df_copy['ast'] == True) & (df_copy['ast_completed'] == True)]
+        if not with_ast.empty:
+            with_ast_weekly = with_ast.groupby('week')['ast_duration_seconds'].median().reset_index()
+            with_ast_weekly.columns = ['week', 'median_duration']
+            fig.add_trace(go.Scatter(
+                x=with_ast_weekly['week'], y=with_ast_weekly['median_duration'], mode='lines+markers',
+                name='AST processing', line=dict(color=COLORS['chart'][0]),
+                marker=dict(color=COLORS['chart'][0])
+            ))
+
+    fig.update_layout(**get_chart_layout('Weekly Median Duration Trend'))
     fig.update_layout(
-        barmode='group',
+        yaxis_title='Median Duration (seconds)',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
-        xaxis_title='Median Duration (seconds)'
     )
     return fig
 
-def create_peak_hours(df):
-    hours = df['hour'].value_counts().sort_index().reset_index()
-    hours.columns = ['hour', 'runs']
-    hours['label'] = hours['hour'].apply(lambda h: f"{h}:00")
-    fig = px.bar(hours, x='label', y='runs', color_discrete_sequence=[COLORS['chart'][3]])
-    fig.update_layout(**get_chart_layout('Peak Usage Times'))
+def create_p90_duration_by_region(df):
+    """Bar chart showing P90 duration by region.
+    
+    For non-AST runs: P90 of pipeline duration_seconds.
+    For AST runs: P90 of ast_duration_seconds from detail logs (where available).
+    """
+    regions = df['ast_region'].unique()
+
+    data = []
+    for region in regions:
+        region_data = df[df['ast_region'] == region]
+
+        # Without AST — pipeline duration
+        no_ast = region_data[region_data['ast'] == False]['duration_seconds']
+        if len(no_ast) > 0:
+            data.append({'region': region, 'type': 'Pipeline (no AST)', 'p90_duration': no_ast.quantile(0.90)})
+
+        # With AST — actual AST duration from detail logs
+        if 'ast_duration_seconds' in df.columns:
+            with_ast = region_data.loc[
+                (region_data['ast'] == True) & (region_data['ast_completed'] == True),
+                'ast_duration_seconds'
+            ].dropna()
+            if len(with_ast) > 0:
+                data.append({'region': region, 'type': 'AST processing', 'p90_duration': with_ast.quantile(0.90)})
+
+    plot_df = pd.DataFrame(data)
+
+    fig = go.Figure()
+
+    # Add bars for Pipeline (no AST)
+    no_ast_df = plot_df[plot_df['type'] == 'Pipeline (no AST)']
+    fig.add_trace(go.Bar(
+        name='Pipeline (no AST)',
+        y=no_ast_df['region'],
+        x=no_ast_df['p90_duration'],
+        orientation='h',
+        marker_color=COLORS['chart'][1],
+        text=[f"{v:.0f}s" for v in no_ast_df['p90_duration']],
+        textposition='outside'
+    ))
+
+    # Add bars for AST processing
+    with_ast_df = plot_df[plot_df['type'] == 'AST processing']
+    if not with_ast_df.empty:
+        fig.add_trace(go.Bar(
+            name='AST processing',
+            y=with_ast_df['region'],
+            x=with_ast_df['p90_duration'],
+            orientation='h',
+            marker_color=COLORS['chart'][0],
+            text=[f"{v:.0f}s" for v in with_ast_df['p90_duration']],
+            textposition='outside'
+        ))
+
+    fig.update_layout(**get_chart_layout('P90 Duration by Region', height=320))
+    fig.update_layout(
+        barmode='group',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        xaxis_title='P90 Duration (seconds)'
+    )
     return fig
 
 def create_status_distribution(df):
@@ -499,56 +653,29 @@ def create_error_messages(df):
 
     return fig
 
-def create_error_by_stage(df):
+def create_error_by_region(df):
     """
-    Bar chart showing error count by pipeline stage.
-    
-    Only available when detail logs have been loaded (detail_error_stage column).
-    This gives a quick overview of which stages are most error-prone.
+    Pie chart showing error distribution by region.
     """
-    stage_col = 'detail_error_stage'
-    if stage_col not in df.columns:
+    error_col = 'detail_error_message' if 'detail_error_message' in df.columns else 'error_message'
+
+    # Filter to rows with non-empty error messages
+    mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
+    error_df = df.loc[mask].copy()
+
+    if len(error_df) == 0:
         fig = go.Figure()
-        fig.add_annotation(
-            text="Detail logs required for stage breakdown",
-            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False
-        )
-        fig.update_layout(**get_chart_layout('Errors by Pipeline Stage'))
+        fig.add_annotation(text="No errors recorded", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(**get_chart_layout('Errors by Region', height=320))
         return fig
 
-    mask = df[stage_col].notna()
-    if mask.sum() == 0:
-        fig = go.Figure()
-        fig.add_annotation(text="No stage-level errors recorded",
-                           xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(**get_chart_layout('Errors by Pipeline Stage'))
-        return fig
+    region_errors = error_df['ast_region'].value_counts().reset_index()
+    region_errors.columns = ['region', 'count']
 
-    stage_counts = df.loc[mask, stage_col].value_counts().reset_index()
-    stage_counts.columns = ['stage', 'count']
-
-    # Color map for stages
-    stage_colors = {
-        'initialization': COLORS['chart'][0],
-        'input_validation': COLORS['chart'][2],
-        'workspace_creation': COLORS['chart'][5],
-        'ast_execution': COLORS['chart'][4],
-        'tenure_info': COLORS['chart'][3],
-        'admin_overlap': COLORS['chart'][1],
-        'batch_run': COLORS['text_muted'],
-    }
-    colors = [stage_colors.get(s, COLORS['error']) for s in stage_counts['stage']]
-
-    fig = go.Figure(go.Bar(
-        y=stage_counts['stage'],
-        x=stage_counts['count'],
-        orientation='h',
-        marker_color=colors,
-        text=stage_counts['count'],
-        textposition='outside',
-    ))
-    fig.update_layout(**get_chart_layout('Errors by Pipeline Stage', height=320))
-    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+    fig = px.pie(region_errors, values='count', names='region',
+                 color_discrete_sequence=COLORS['chart'], hole=0.4)
+    fig.update_layout(**get_chart_layout('Errors by Region', height=320))
+    fig.update_traces(textposition='inside', textinfo='percent+label')
     return fig
 
 
@@ -608,11 +735,11 @@ def generate_html(df, metrics):
         'user_dist_gis': create_user_distribution_gis(df).to_html(full_html=False, include_plotlyjs=False),
         'user_dist_non_gis': create_user_distribution_non_gis(df).to_html(full_html=False, include_plotlyjs=False),
         'region_dist': create_region_distribution(df).to_html(full_html=False, include_plotlyjs=False),
-        'duration_region': create_duration_by_region(df).to_html(full_html=False, include_plotlyjs=False),
-        'peak_hours': create_peak_hours(df).to_html(full_html=False, include_plotlyjs=False),
+        'weekly_duration': create_weekly_duration_trend(df).to_html(full_html=False, include_plotlyjs=False),
+        'p90_region': create_p90_duration_by_region(df).to_html(full_html=False, include_plotlyjs=False),
         'status_dist': create_status_distribution(df).to_html(full_html=False, include_plotlyjs=False),
         'error_msgs': create_error_messages(df).to_html(full_html=False, include_plotlyjs=False),
-        'error_stage': create_error_by_stage(df).to_html(full_html=False, include_plotlyjs=False),
+        'error_region': create_error_by_region(df).to_html(full_html=False, include_plotlyjs=False),
         'user_group_split': create_user_group_split(df).to_html(full_html=False, include_plotlyjs=False),
         'feature_adoption': create_feature_adoption(df).to_html(full_html=False, include_plotlyjs=False),
         'prov_ref_region': create_prov_ref_by_region(df).to_html(full_html=False, include_plotlyjs=False),
@@ -630,7 +757,7 @@ def generate_html(df, metrics):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LDS Tool Usage Dashboard</title>
+    <title>Tool Usage Dashboard</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         * {{
@@ -689,15 +816,15 @@ def generate_html(df, metrics):
         }}
         
         .section-header {{
-            font-size: 13px;
+            font-size: 20px;
             text-transform: uppercase;
-            letter-spacing: 3px;
+            letter-spacing: 4px;
             color: {COLORS['accent']};
-            margin-bottom: 16px;
-            padding-bottom: 8px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
             border-bottom: 2px solid {COLORS['accent']};
             font-family: monospace;
-            font-weight: 600;
+            font-weight: 700;
         }}
         
         .metrics-grid {{
@@ -802,7 +929,7 @@ def generate_html(df, metrics):
             <span class="status-indicator"></span>
             <span class="subtitle">Data Period: {metrics['date_from']} to {metrics['date_to']}</span>
         </div>
-        <h1>LDS Tool Usage Dashboard</h1>
+        <h1>Tool Usage Dashboard</h1>
     </header>
     
     <!-- USAGE VOLUME -->
@@ -846,19 +973,24 @@ def generate_html(df, metrics):
         <h2 class="section-header">Performance</h2>
         <div class="metrics-grid">
             <div class="metric-card">
-                <div class="label">Median (No AST)</div>
+                <div class="label">Median Pipeline</div>
                 <div class="value">{format_duration(metrics['median_duration_without_ast'])}</div>
-                <div class="card-subtitle">Without AST selection</div>
+                <div class="card-subtitle">Runs without AST</div>
             </div>
             <div class="metric-card">
-                <div class="label">Median (With AST)</div>
+                <div class="label">Median AST Time</div>
                 <div class="value">{format_duration(metrics['median_duration_with_ast'])}</div>
-                <div class="card-subtitle">With AST selection</div>
+                <div class="card-subtitle">{metrics['ast_completed_count']}/{metrics['ast_requested_count']} AST runs with timing</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">P90 Duration</div>
+                <div class="value">{format_duration(metrics['p90_duration'])}</div>
+                <div class="card-subtitle">90th percentile (all runs)</div>
             </div>
         </div>
         <div class="charts-grid">
-            <div class="chart-container">{charts['duration_region']}</div>
-            <div class="chart-container">{charts['peak_hours']}</div>
+            <div class="chart-container">{charts['weekly_duration']}</div>
+            <div class="chart-container">{charts['p90_region']}</div>
         </div>
     </section>
     
@@ -889,7 +1021,7 @@ def generate_html(df, metrics):
         </div>
         <div class="charts-grid">
             <div class="chart-container">{charts['status_dist']}</div>
-            <div class="chart-container">{charts['error_stage']}</div>
+            <div class="chart-container">{charts['error_region']}</div>
         </div>
         <div class="charts-grid" style="margin-top: 16px;">
             <div class="chart-container" style="grid-column: span 2;">{charts['error_msgs']}</div>
@@ -936,7 +1068,7 @@ def generate_html(df, metrics):
 # =============================================================================
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("LDS Tool Usage Dashboard - HTML Generator")
+    print("Tool Usage Dashboard - HTML Generator")
     print("="*60)
     
     # Load summary and detail data
@@ -960,6 +1092,9 @@ if __name__ == '__main__':
     
     # Enrich error messages from detail logs
     df = enrich_errors_from_detail(df_summary, df_detail)
+    
+    # Enrich AST duration from detail logs (stage-level timestamps)
+    df = enrich_ast_duration(df, df_detail)
     
     # Calculate metrics
     metrics = calculate_metrics(df)
