@@ -4,7 +4,8 @@ lds_usage_dashboard.py
 LDS Tool Usage Dashboard - Static HTML Generator
 
 Reads all monthly JSONL files matching *_summary.jsonl and *_detail.jsonl patterns
-from S3-compatible object storage (NRS ObjectStore).
+from the NRS ObjectStore.
+
 Detail logs are joined by run_id to enrich error messages beyond what the summary captures.
 
 """
