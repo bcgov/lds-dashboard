@@ -1,36 +1,37 @@
 """
-Tool Usage Dashboard - Static HTML Generator
-Generates a standalone HTML file with interactive Plotly charts.
-Can be hosted on GitHub Pages for free.
+lds_usage_dashboard.py
 
-To use:
-    1. pip install pandas plotly
-    2. Update PATH to your JSONL logs location
-    3. python lds_usage_dashboard.py
-    4. Upload the generated 'dashboard.html' to GitHub Pages
+LDS Tool Usage Dashboard - Static HTML Generator
 
-Reads all monthly JSONL files matching *_summary.jsonl and *_detail.jsonl patterns.
+Reads all monthly JSONL files matching *_summary.jsonl and *_detail.jsonl patterns
+from S3-compatible object storage (NRS ObjectStore).
 Detail logs are joined by run_id to enrich error messages beyond what the summary captures.
 
-GitHub Pages Setup:
-    1. Create a repository (or use existing one)
-    2. Go to Settings > Pages
-    3. Set source to 'main' branch and '/ (root)' folder
-    4. Upload dashboard.html (rename to index.html for auto-loading)
-    5. Your dashboard will be at: https://yourusername.github.io/reponame/
 """
 
 import os
+import io
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import boto3
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-PATH = r"\\objectstore2.nrs.bcgov\GSS_Share\authorizations\logs\lds_tool_logs"
 OUTPUT_FILE = r"W:\srm\gss\sandbox\mlabiadh\workspace\20260130_lds_logs\dashboard.html"
+
+# S3-compatible object storage configuration
+S3_BUCKET = "gssgeodrive"
+S3_PREFIX = "authorizations/new folder|143/lds_tool_logs/"
+
+s3_client = boto3.client(
+    "s3",
+    endpoint_url=os.getenv("S3_NRS_ENDPOINT"),
+    aws_access_key_id=os.getenv("S3_GSS_GEODRIVE_KEY_ID"),
+    aws_secret_access_key=os.getenv("S3_GSS_GEODRIVE_SECRET_KEY"),
+)
 
 # =============================================================================
 # USER CONFIGURATION
@@ -64,30 +65,51 @@ COLORS = {
 _GENERIC_ERROR_STAGES = {'completion', 'main'}
 
 # =============================================================================
+# S3 HELPERS
+# =============================================================================
+def _list_s3_keys(suffix):
+    """List all object keys under S3_PREFIX that end with the given suffix."""
+    keys = []
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=S3_PREFIX):
+        for obj in page.get("Contents", []):
+            if obj["Key"].endswith(suffix):
+                keys.append(obj["Key"])
+    return sorted(keys)
+
+
+def _read_jsonl_from_s3(key):
+    """Download a JSONL file from S3 and return a DataFrame."""
+    response = s3_client.get_object(Bucket=S3_BUCKET, Key=key)
+    body = response["Body"].read()
+    return pd.read_json(io.BytesIO(body), lines=True)
+
+
+# =============================================================================
 # DATA LOADING
 # =============================================================================
 def load_data():
-    """Load data from all monthly JSONL files."""
-    import glob
+    """Load data from all monthly JSONL files in S3."""
 
     # --- Load summary files ---
-    summary_files = glob.glob(os.path.join(PATH, '*_summary.jsonl'))
+    summary_keys = _list_s3_keys("_summary.jsonl")
 
-    if not summary_files:
-        print(f"! No summary JSONL files found in {PATH}")
+    if not summary_keys:
+        print(f"! No summary JSONL files found under s3://{S3_BUCKET}/{S3_PREFIX}")
         return pd.DataFrame(), pd.DataFrame()
 
-    print(f"Found {len(summary_files)} summary file(s)")
+    print(f"Found {len(summary_keys)} summary file(s)")
 
     summary_dfs = []
-    for jsonl_file in sorted(summary_files):
+    for key in summary_keys:
         try:
-            df_temp = pd.read_json(jsonl_file, lines=True)
-            filename = os.path.basename(jsonl_file)
+            df_temp = _read_jsonl_from_s3(key)
+            filename = key.rsplit("/", 1)[-1]
             print(f"  ✓ Loaded {len(df_temp)} records from {filename}")
             summary_dfs.append(df_temp)
         except Exception as e:
-            print(f"  ! Error loading {os.path.basename(jsonl_file)}: {e}")
+            filename = key.rsplit("/", 1)[-1]
+            print(f"  ! Error loading {filename}: {e}")
 
     if not summary_dfs:
         print("! No summary data loaded")
@@ -101,18 +123,19 @@ def load_data():
     df_summary['hour'] = df_summary['timestamp_start'].dt.hour
 
     # --- Load detail files ---
-    detail_files = glob.glob(os.path.join(PATH, '*_detail.jsonl'))
-    print(f"\nFound {len(detail_files)} detail file(s)")
+    detail_keys = _list_s3_keys("_detail.jsonl")
+    print(f"\nFound {len(detail_keys)} detail file(s)")
 
     detail_dfs = []
-    for jsonl_file in sorted(detail_files):
+    for key in detail_keys:
         try:
-            df_temp = pd.read_json(jsonl_file, lines=True)
-            filename = os.path.basename(jsonl_file)
+            df_temp = _read_jsonl_from_s3(key)
+            filename = key.rsplit("/", 1)[-1]
             print(f"  ✓ Loaded {len(df_temp)} records from {filename}")
             detail_dfs.append(df_temp)
         except Exception as e:
-            print(f"  ! Error loading {os.path.basename(jsonl_file)}: {e}")
+            filename = key.rsplit("/", 1)[-1]
+            print(f"  ! Error loading {filename}: {e}")
 
     df_detail = pd.concat(detail_dfs, ignore_index=True) if detail_dfs else pd.DataFrame()
     if not df_detail.empty:
@@ -757,7 +780,7 @@ def generate_html(df, metrics):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tool Usage Dashboard</title>
+    <title>LDS Tool Usage Dashboard</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         * {{
@@ -929,7 +952,7 @@ def generate_html(df, metrics):
             <span class="status-indicator"></span>
             <span class="subtitle">Data Period: {metrics['date_from']} to {metrics['date_to']}</span>
         </div>
-        <h1>Tool Usage Dashboard</h1>
+        <h1>LDS Tool Usage Dashboard</h1>
     </header>
     
     <!-- USAGE VOLUME -->
@@ -1068,7 +1091,7 @@ def generate_html(df, metrics):
 # =============================================================================
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("Tool Usage Dashboard - HTML Generator")
+    print("LDS Tool Usage Dashboard - HTML Generator")
     print("="*60)
     
     # Load summary and detail data
