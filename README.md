@@ -1,1 +1,1 @@
-LDS tool stats dashboard
+A usage statistics dashboard for the Legal Description Schedule (LDS) tool.
