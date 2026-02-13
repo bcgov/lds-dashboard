@@ -416,17 +416,24 @@ def get_chart_layout(title="", height=300):
         'autosize': True,
     }
 
-def create_daily_trend(df):
-    daily = df.groupby(['date', 'user_group']).size().reset_index(name='runs')
+def create_weekly_trend(df):
+    # Group by week (starting Monday)
+    df_copy = df.copy()
+    df_copy['week'] = pd.to_datetime(df_copy['date']).dt.to_period('W').apply(lambda r: r.start_time)
+    weekly = df_copy.groupby(['week', 'user_group']).size().reset_index(name='runs')
+    
     fig = go.Figure()
     for group, color in [(GROUP_GIS, COLORS['chart'][3]), (GROUP_NON_GIS, COLORS['chart'][5])]:
-        grp = daily[daily['user_group'] == group]
+        grp = weekly[weekly['user_group'] == group]
         fig.add_trace(go.Scatter(
-            x=grp['date'], y=grp['runs'], mode='lines+markers',
+            x=grp['week'], y=grp['runs'], mode='lines+markers',
             name=group, line=dict(color=color), marker=dict(color=color)
         ))
-    fig.update_layout(**get_chart_layout('Daily Run Trend'))
-    fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5))
+    fig.update_layout(**get_chart_layout('Weekly Run Trend'))
+    fig.update_layout(
+        yaxis_title='Total Runs',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
+    )
     return fig
 
 def create_user_distribution_gis(df):
@@ -792,7 +799,7 @@ def generate_html(df, metrics):
 
     # Create all charts
     charts = {
-        'daily_trend': create_daily_trend(df).to_html(full_html=False, include_plotlyjs=False),
+        'weekly_trend': create_weekly_trend(df).to_html(full_html=False, include_plotlyjs=False),
         'user_dist_gis': create_user_distribution_gis(df).to_html(full_html=False, include_plotlyjs=False),
         'user_dist_non_gis': create_user_distribution_non_gis(df).to_html(full_html=False, include_plotlyjs=False),
         'region_dist': create_region_distribution(df).to_html(full_html=False, include_plotlyjs=False),
@@ -1056,7 +1063,7 @@ def generate_html(df, metrics):
             </div>
         </div>
         <div class="charts-grid charts-grid-3">
-            <div class="chart-container">{charts['daily_trend']}</div>
+            <div class="chart-container">{charts['weekly_trend']}</div>
             <div class="chart-container">{charts['region_dist']}</div>
             <div class="chart-container">{charts['user_group_split']}</div>
         </div>
