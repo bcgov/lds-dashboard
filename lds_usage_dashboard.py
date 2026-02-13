@@ -14,6 +14,7 @@ Author:
 
 import os
 import io
+import re
 import boto3
 import pandas as pd
 import plotly.express as px
@@ -214,6 +215,54 @@ def enrich_errors_from_detail(df_summary, df_detail):
     return df_summary
 
 
+def enrich_reprojections(df_summary, df_detail):
+    """
+    Scan detail logs to flag runs that required reprojection to BC Albers.
+    Extract source CRS from: "Reprojected input from (.+) to BC Albers"
+    
+    New columns added to df_summary:
+      - was_reprojected   : bool  – True if reprojection occurred
+      - source_projection : str   – Source CRS (e.g. "GCS_WGS_1984...")
+    """
+    df_summary['was_reprojected'] = False
+    df_summary['source_projection'] = None
+
+    if df_detail.empty:
+        return df_summary
+
+    # Find reprojection messages
+    # Filter to likely candidates first to speed up regex
+    mask = df_detail['message'].str.contains("Reprojected input from", na=False)
+    reproj_logs = df_detail[mask].copy()
+
+    if reproj_logs.empty:
+        return df_summary
+
+    # Extract source CRS
+    # Regex: Reprojected input from (.+?) to BC Albers
+    pattern = r"Reprojected input from (.+?) to BC Albers"
+    reproj_logs['source_crs'] = reproj_logs['message'].str.extract(pattern, expand=False)
+    
+    # Drop where extraction failed (if any)
+    reproj_logs = reproj_logs.dropna(subset=['source_crs'])
+    
+    if reproj_logs.empty:
+        return df_summary
+
+    # Deduplicate per run_id (take first found per run)
+    source_map = reproj_logs.groupby('run_id')['source_crs'].first()
+    
+    # Map to summary dataframe using run_id
+    # Note: map returns NaN if key not found, which is what we want for source_projection
+    df_summary['source_projection'] = df_summary['run_id'].map(source_map)
+    df_summary['was_reprojected'] = df_summary['source_projection'].notna()
+    
+    return df_summary
+    # df_summary is usually passed by reference but here we return a new df.
+    
+    return df_merged.drop(columns=['source_crs'])
+
+
 def enrich_ast_duration(df_summary, df_detail):
     """
     Compute actual AST processing duration from detail-log timestamps.
@@ -312,9 +361,9 @@ def _clean_error_message(msg):
     if '\n' in msg:
         msg = msg.split('\n')[0].strip()
 
-    # Truncate to 120 chars for chart readability
-    if len(msg) > 120:
-        msg = msg[:117] + '...'
+    # Truncate to 75 chars for chart readability
+    if len(msg) > 75:
+        msg = msg[:72] + '...'
 
     return msg.strip()
 
@@ -879,6 +928,52 @@ def create_error_stages(df):
     return fig
 
 
+def create_reprojection_stats(df):
+    """
+    Donut chart of reprojection statistics (Non-GIS users only).
+    Shows the % of runs reprojected, and distribution of source CRSs.
+    """
+    df = df[df['user_group'] == GROUP_NON_GIS]
+    total_runs = len(df)
+    
+    if total_runs == 0:
+        fig = go.Figure()
+        fig.add_annotation(text="No data", xref="paper", yref="paper", 
+                           x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(**get_chart_layout('Reprojection Analytics (Non-GIS)', height=320))
+        return fig
+        
+    reprojected = df[df['was_reprojected']]
+    n_reprojected = len(reprojected)
+    pct_reprojected = (n_reprojected / total_runs * 100)
+    
+    if n_reprojected == 0:
+         fig = go.Figure()
+         # Show "0% Reprojected" in center
+         fig.add_annotation(text="0%<br>Reprojected", xref="paper", yref="paper", 
+                            x=0.5, y=0.5, showarrow=False, font=dict(size=20, color=COLORS['text']))
+         fig.update_layout(**get_chart_layout('Reprojection Analytics (Non-GIS)', height=320))
+         # Hide axes to make it clean
+         fig.update_xaxes(showgrid=False, zeroline=False, visible=False)
+         fig.update_yaxes(showgrid=False, zeroline=False, visible=False)
+         return fig
+
+    # Count source CRSs
+    counts = reprojected['source_projection'].value_counts().reset_index()
+    counts.columns = ['projection', 'count']
+    
+    fig = px.pie(counts, values='count', names='projection', 
+                 title=None, hole=0.6)
+                 
+    fig.update_layout(**get_chart_layout('Reprojection Analytics (Non-GIS)', height=320))
+    fig.add_annotation(text=f"{pct_reprojected:.1f}%<br>Reprojected", 
+                       xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                       font=dict(size=14, color=COLORS['text']))
+    fig.update_traces(textposition='inside', textinfo='percent+label')
+                       
+    return fig
+
+
 def create_usage_heatmap(df):
     """Heatmap of run counts by day of week and hour of day."""
     df_copy = df.copy()
@@ -983,6 +1078,7 @@ def generate_html(df, metrics):
         'error_msgs': create_error_messages(df).to_html(full_html=False, include_plotlyjs=False),
         'error_region': create_error_by_region(df).to_html(full_html=False, include_plotlyjs=False),
         'error_stages': create_error_stages(df).to_html(full_html=False, include_plotlyjs=False),
+        'reprojection_stats': create_reprojection_stats(df).to_html(full_html=False, include_plotlyjs=False),
         'usage_heatmap': create_usage_heatmap(df).to_html(full_html=False, include_plotlyjs=False),
         'user_group_split': create_user_group_split(df).to_html(full_html=False, include_plotlyjs=False),
         'feature_adoption': create_feature_adoption(df).to_html(full_html=False, include_plotlyjs=False),
@@ -1294,8 +1390,9 @@ def generate_html(df, metrics):
             <div class="chart-container">{charts['error_region']}</div>
             <div class="chart-container">{charts['error_stages']}</div>
         </div>
-        <div class="charts-grid" style="margin-top: 16px;">
-            <div class="chart-container" style="grid-column: span 2;">{charts['error_msgs']}</div>
+        <div class="charts-grid" style="margin-top: 16px; grid-template-columns: 2fr 1fr;">
+            <div class="chart-container">{charts['error_msgs']}</div>
+            <div class="chart-container">{charts['reprojection_stats']}</div>
         </div>
     </section>
 
@@ -1363,6 +1460,9 @@ if __name__ == '__main__':
 
     # Enrich error messages from detail logs
     df = enrich_errors_from_detail(df_summary, df_detail)
+
+    # Enrich reprojection info from detail logs
+    df = enrich_reprojections(df, df_detail)
 
     # Enrich AST duration from detail logs (stage-level timestamps)
     df = enrich_ast_duration(df, df_detail)
