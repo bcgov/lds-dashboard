@@ -8,6 +8,9 @@ from the NRS ObjectStore.
 
 Detail logs are joined by run_id to enrich error messages beyond what the summary captures.
 
+Author:
+    Moez Labiadh - GeoBC (moez.labiadh@gov.bc.ca)
+
 """
 
 import os
