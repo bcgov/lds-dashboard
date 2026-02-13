@@ -451,7 +451,7 @@ def create_user_distribution_gis(df):
     if gis_df.empty:
         fig = go.Figure()
         fig.add_annotation(text="No GIS user runs", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
+        fig.update_layout(**get_chart_layout('Top 10 GIS Users', height=320))
         return fig
 
     # Get top 10 users by total runs
@@ -479,10 +479,11 @@ def create_user_distribution_gis(df):
                  color_discrete_map=color_map,
                  category_orders={'clean_user': top_users})
     
-    fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
+    fig.update_layout(**get_chart_layout('Top 10 GIS Users', height=320))
     fig.update_layout(
         yaxis={'categoryorder': 'total ascending'},
         yaxis_title='user_idir',
+        xaxis_title='Number of runs',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, title=None)
     )
     return fig
@@ -493,7 +494,7 @@ def create_user_distribution_non_gis(df):
     if non_gis_df.empty:
         fig = go.Figure()
         fig.add_annotation(text="No Non-GIS user runs", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
+        fig.update_layout(**get_chart_layout('Top 10 Non-GIS Users', height=320))
         return fig
 
     # Get top 10 users by total runs
@@ -521,10 +522,11 @@ def create_user_distribution_non_gis(df):
                  color_discrete_map=color_map,
                  category_orders={'clean_user': top_users}) # Keep order consistent with total runs
     
-    fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
+    fig.update_layout(**get_chart_layout('Top 10 Non-GIS Users', height=320))
     fig.update_layout(
         yaxis={'categoryorder': 'total ascending'},
         yaxis_title='user_idir',
+        xaxis_title='Number of runs',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, title=None)
     )
     return fig
@@ -537,6 +539,7 @@ def create_region_distribution(df):
     fig.update_layout(**get_chart_layout('Runs by Region'))
     fig.update_layout(
         yaxis={'categoryorder': 'total ascending'},
+        xaxis_title='Number of runs',
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, title_text=''),
     )
     return fig
