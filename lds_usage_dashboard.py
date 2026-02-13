@@ -21,7 +21,9 @@ import boto3
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-OUTPUT_FILE = r"W:\srm\gss\sandbox\mlabiadh\workspace\20260130_lds_logs\dashboard.html"
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "index.html")
 
 # S3-compatible object storage configuration
 S3_BUCKET = "gssgeodrive"
@@ -795,6 +797,8 @@ def create_prov_ref_by_region(df):
 # =============================================================================
 def generate_html(df, metrics):
     """Generate complete HTML dashboard."""
+    from datetime import datetime
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M')
     
     # Create all charts
     charts = {
@@ -993,7 +997,10 @@ def generate_html(df, metrics):
     <header>
         <div>
             <span class="status-indicator"></span>
-            <span class="subtitle">Data Period: {metrics['date_from']} to {metrics['date_to']}</span>
+            <span class="subtitle">Last Updated: {generated_at}</span>
+        </div>
+        <div style="margin-top: 4px;">
+            <span class="subtitle" style="margin-left: 24px;">Data Period: {metrics['date_from']} to {metrics['date_to']}</span>
         </div>
         <h1>LDS Tool Usage Dashboard</h1>
     </header>
@@ -1052,6 +1059,11 @@ def generate_html(df, metrics):
                 <div class="label">Success Rate</div>
                 <div class="value">{metrics['success_rate']:.1f}%</div>
                 <div class="card-subtitle">Completed runs</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Failure Rate</div>
+                <div class="value">{metrics['error_rate']:.1f}%</div>
+                <div class="card-subtitle">Runs with errors</div>
             </div>
             <div class="metric-card">
                 <div class="label">Warning Rate</div>
