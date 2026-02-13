@@ -10,7 +10,6 @@ Detail logs are joined by run_id to enrich error messages beyond what the summar
 
 Author:
     Moez Labiadh - GeoBC (moez.labiadh@gov.bc.ca)
-
 """
 
 import os
