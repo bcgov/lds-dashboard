@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Check out the repo (main branch with your Python script)
+      # 1. Check out the repo (main branch)
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -45,7 +45,7 @@ jobs:
 
       # 5. Run the dashboard generator
       #    Secrets are injected as environment variables — the script
-      #    reads them via os.getenv() (already in your code).
+      #    reads them via os.getenv()
       - name: Generate dashboard
         env:
           S3_NRS_ENDPOINT: ${{ secrets.S3_NRS_ENDPOINT }}
