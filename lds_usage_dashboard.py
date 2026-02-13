@@ -395,6 +395,15 @@ def calculate_metrics(df):
         'error_rate': has_error.sum() / total * 100,
         'warning_rate': len(df[df['warning_count'] > 0]) / total * 100,
         'error_types': df.loc[has_error, error_col].nunique(),
+        # Non-GIS only rates (for Performance & Reliability section)
+        'non_gis_success_rate': (
+            len(df[(df['user_group'] == GROUP_NON_GIS) & (df['status'] == 'success')]) /
+            max(non_gis_runs, 1) * 100
+        ),
+        'non_gis_error_rate': (
+            has_error[df['user_group'] == GROUP_NON_GIS].sum() /
+            max(non_gis_runs, 1) * 100
+        ),
         'date_from': date_min,
         'date_to': date_max,
     }
@@ -470,7 +479,7 @@ def create_user_distribution_gis(df):
                  color_discrete_map=color_map,
                  category_orders={'clean_user': top_users})
     
-    fig.update_layout(**get_chart_layout('Runs by GIS Users (Status Breakdown)', height=320))
+    fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
     fig.update_layout(
         yaxis={'categoryorder': 'total ascending'},
         yaxis_title='user_idir',
@@ -512,7 +521,7 @@ def create_user_distribution_non_gis(df):
                  color_discrete_map=color_map,
                  category_orders={'clean_user': top_users}) # Keep order consistent with total runs
     
-    fig.update_layout(**get_chart_layout('Runs by Non-GIS Users (Status Breakdown)', height=320))
+    fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
     fig.update_layout(
         yaxis={'categoryorder': 'total ascending'},
         yaxis_title='user_idir',
@@ -533,7 +542,7 @@ def create_region_distribution(df):
     return fig
 
 def create_failure_rate_trend(df):
-    """Weekly failure-rate (%) trend with regional context.
+    """Weekly failure-rate (%) trend with regional context (Non-GIS users only).
 
     Layers (bottom to top):
       1. Shaded band showing the overall average failure rate for reference.
@@ -550,7 +559,7 @@ def create_failure_rate_trend(df):
 
     error_col = 'detail_error_message' if 'detail_error_message' in df.columns else 'error_message'
 
-    df_copy = df.copy()
+    df_copy = df[df['user_group'] == GROUP_NON_GIS].copy()
     df_copy['week'] = df_copy['timestamp_start'].dt.to_period('W').apply(lambda r: r.start_time)
     df_copy['has_error'] = (
         df_copy[error_col].notna()
@@ -666,7 +675,7 @@ def create_failure_rate_trend(df):
         ),
     ))
 
-    fig.update_layout(**get_chart_layout('Weekly Failure Rate Trend', height=350))
+    fig.update_layout(**get_chart_layout('Weekly Failure Rate Trend (Non-GIS)', height=350))
     fig.update_layout(
         yaxis_title='Failure Rate (%)',
         yaxis=dict(
@@ -679,17 +688,18 @@ def create_failure_rate_trend(df):
     return fig
 
 def create_status_distribution(df):
-    status = df['status'].value_counts().reset_index()
+    non_gis_df = df[df['user_group'] == GROUP_NON_GIS]
+    status = non_gis_df['status'].value_counts().reset_index()
     status.columns = ['status', 'count']
     colors = [COLORS['success'] if s == 'success' else COLORS['error'] for s in status['status']]
     fig = px.pie(status, values='count', names='status', color_discrete_sequence=colors, hole=0.4)
-    fig.update_layout(**get_chart_layout('Status Distribution', height=320))
+    fig.update_layout(**get_chart_layout('Status Distribution (Non-GIS)', height=320))
     fig.update_traces(textposition='inside', textinfo='percent+label')
     return fig
 
 def create_error_messages(df):
     """
-    Bar chart of common error messages, enriched from detail logs.
+    Bar chart of common error messages (Non-GIS users only).
 
     Uses 'detail_error_message' (joined from detail JSONL) which provides:
       - More specific root-cause messages than the summary log
@@ -698,10 +708,16 @@ def create_error_messages(df):
       - Cleaned/normalized messages so identical root causes group together
 
     Bars are color-coded by the stage where the error occurred.
-    Hover shows GIS vs Non-GIS breakdown.
     """
+    df = df[df['user_group'] == GROUP_NON_GIS]
     error_col = 'detail_error_message' if 'detail_error_message' in df.columns else 'error_message'
     stage_col = 'detail_error_stage' if 'detail_error_stage' in df.columns else None
+    # Normalize equivalent error messages
+    error_remap = {
+        "cannot access local variable 'str_region' where it is not associated with a value":
+            "Input feature layer does not intersect any BC Natural Resource Region. "
+            "Please verify the geometry is located within British Columbia.",
+    }
 
     # Filter to rows with non-empty error messages
     mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
@@ -709,6 +725,13 @@ def create_error_messages(df):
     if stage_col:
         cols.append(stage_col)
     error_df = df.loc[mask, cols].copy()
+
+    # Apply error message normalization
+    error_df[error_col] = error_df[error_col].replace(error_remap)
+
+    # Remap admin_overlap stage to input_validation (old str_region bug)
+    if stage_col and stage_col in error_df.columns:
+        error_df[stage_col] = error_df[stage_col].replace({'admin_overlap': 'input_validation'})
 
     if len(error_df) == 0:
         fig = go.Figure()
@@ -728,7 +751,7 @@ def create_error_messages(df):
         grouped = grouped.sort_values('count', ascending=False).head(8)
 
         stage_colors = {
-            'initialization': COLORS['chart'][0],
+            'initialization': '#303DBA',
             'input_validation': COLORS['chart'][2],
             'workspace_creation': COLORS['chart'][5],
             'ast_execution': COLORS['chart'][4],
@@ -759,7 +782,7 @@ def create_error_messages(df):
                 textfont=dict(size=11),
             ))
 
-        fig.update_layout(**get_chart_layout('Common Error Messages (from Detail Logs)', height=380))
+        fig.update_layout(**get_chart_layout('Common Error Messages - Non-GIS (from Detail Logs)', height=380))
         fig.update_layout(
             yaxis={'categoryorder': 'total ascending'},
             margin={'l': 250, 'r': 100, 't': 50, 'b': 60},
@@ -774,7 +797,8 @@ def create_error_messages(df):
     return fig
 
 def create_error_by_region(df):
-    """Pie chart showing error distribution by region."""
+    """Pie chart showing error distribution by region (Non-GIS users only)."""
+    df = df[df['user_group'] == GROUP_NON_GIS]
     error_col = 'detail_error_message' if 'detail_error_message' in df.columns else 'error_message'
 
     mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
@@ -789,32 +813,41 @@ def create_error_by_region(df):
     region_errors = error_df['ast_region'].value_counts().reset_index()
     region_errors.columns = ['region', 'count']
 
+    # Use same region-color mapping as Weekly Failure Rate Trend
+    region_color_map = {
+        region: COLORS['chart'][i % len(COLORS['chart'])]
+        for i, region in enumerate(region_errors['region'])
+    }
+
     fig = px.pie(region_errors, values='count', names='region',
-                 color_discrete_sequence=COLORS['chart'], hole=0.4)
-    fig.update_layout(**get_chart_layout('Errors by Region', height=320))
+                 color='region', color_discrete_map=region_color_map, hole=0.4)
+    fig.update_layout(**get_chart_layout('Errors by Region (Non-GIS)', height=320))
     fig.update_traces(textposition='inside', textinfo='percent+label')
     return fig
 
 
 def create_error_stages(df):
-    """Donut chart showing error distribution by pipeline stage."""
+    """Donut chart showing error distribution by pipeline stage (Non-GIS users only)."""
+    df = df[df['user_group'] == GROUP_NON_GIS]
     stage_col = 'detail_error_stage' if 'detail_error_stage' in df.columns else None
     if stage_col is None:
         fig = go.Figure()
         fig.add_annotation(text="No stage data", xref="paper", yref="paper",
                            x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(**get_chart_layout('Top Error Stages', height=320))
+        fig.update_layout(**get_chart_layout('Top Error Stages (Non-GIS)', height=320))
         return fig
 
     error_col = 'detail_error_message'
     mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
     error_df = df.loc[mask].copy()
-
+    
+    # Merge admin_overlap into input_validation
+    error_df[stage_col] = error_df[stage_col].replace({'admin_overlap': 'input_validation'})
     if len(error_df) == 0 or error_df[stage_col].isna().all():
         fig = go.Figure()
         fig.add_annotation(text="No errors recorded", xref="paper", yref="paper",
                            x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(**get_chart_layout('Top Error Stages', height=320))
+        fig.update_layout(**get_chart_layout('Top Error Stages (Non-GIS)', height=320))
         return fig
 
     stage_counts = error_df[stage_col].value_counts().reset_index()
@@ -822,7 +855,7 @@ def create_error_stages(df):
 
     # Use stage colors consistent with error messages chart
     stage_colors = {
-        'initialization': COLORS['chart'][0],
+        'initialization': '#303DBA',
         'input_validation': COLORS['chart'][2],
         'workspace_creation': COLORS['chart'][5],
         'ast_execution': COLORS['chart'][4],
@@ -838,7 +871,7 @@ def create_error_stages(df):
         hole=0.4,
         marker=dict(colors=colors),
     )])
-    fig.update_layout(**get_chart_layout('Top Error Stages', height=320))
+    fig.update_layout(**get_chart_layout('Top Error Stages (Non-GIS)', height=320))
     fig.update_traces(textposition='inside', textinfo='percent+label')
     return fig
 
@@ -1231,13 +1264,13 @@ def generate_html(df, metrics):
             </div>
             <div class="metric-card">
                 <div class="label">Success Rate</div>
-                <div class="value">{metrics['success_rate']:.1f}%</div>
-                <div class="card-subtitle">Completed runs</div>
+                <div class="value">{metrics['non_gis_success_rate']:.1f}%</div>
+                <div class="card-subtitle">Non-GIS runs</div>
             </div>
             <div class="metric-card">
                 <div class="label">Failure Rate</div>
-                <div class="value">{metrics['error_rate']:.1f}%</div>
-                <div class="card-subtitle">Runs with errors</div>
+                <div class="value">{metrics['non_gis_error_rate']:.1f}%</div>
+                <div class="card-subtitle">Non-GIS runs</div>
             </div>
             <div class="metric-card">
                 <div class="label">Warning Rate</div>
