@@ -14,11 +14,10 @@ Author:
 
 import os
 import io
+import boto3
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import boto3
 
 # =============================================================================
 # CONFIGURATION
@@ -344,8 +343,6 @@ def calculate_metrics(df):
     ast_false = df[df['ast'] == False]['duration_seconds']
     # With AST: use ast_duration_seconds (from detail logs) where available,
     # otherwise fall back to summary duration_seconds for completed AST runs.
-    # ast_duration_seconds captures actual AST processing time computed from
-    # the detail log stage timestamps (start → end of ast_execution stage).
     if 'ast_duration_seconds' in df.columns:
         ast_true = df.loc[
             (df['ast'] == True) & (df['ast_completed'] == True),
@@ -386,14 +383,11 @@ def calculate_metrics(df):
         'non_gis_users': df.loc[df['user_group'] == GROUP_NON_GIS, 'clean_user'].nunique(),
         'gis_runs': gis_runs,
         'non_gis_runs': non_gis_runs,
-        # Median pipeline duration (without AST)
         'median_duration_without_ast': ast_false.median() if len(ast_false) > 0 else 0,
-        # Median AST processing time (completed AST runs only, from detail logs)
         'median_duration_with_ast': ast_true.median() if len(ast_true) > 0 else 0,
         'ast_completed_count': int(ast_succeeded),
         'ast_requested_count': ast_requested,
         'ast_success_rate': ast_success_rate,
-        # P90 duration (all runs)
         'p90_duration': p90_duration,
         'peak_hour': df['hour'].mode().iloc[0] if len(df['hour'].mode()) > 0 else 0,
         'busiest_day': df.groupby('date').size().idxmax(),
@@ -491,7 +485,7 @@ def create_failure_rate_trend(df):
     Failure rate is computed as:
         errors_in_week / total_runs_in_week * 100
 
-    Uses the same region → color mapping as the Errors by Region pie chart.
+    Uses the same region color mapping as the Errors by Region pie chart.
     """
     import numpy as np
 
@@ -640,10 +634,10 @@ def create_error_messages(df):
 
     Uses 'detail_error_message' (joined from detail JSONL) which provides:
       - More specific root-cause messages than the summary log
-      - Errors from runs the summary missed (e.g. AST failures on otherwise 
+      - Errors from runs the summary missed (e.g. AST failures on otherwise
         'success' runs)
       - Cleaned/normalized messages so identical root causes group together
-    
+
     Bars are color-coded by the stage where the error occurred.
     Hover shows GIS vs Non-GIS breakdown.
     """
@@ -665,7 +659,6 @@ def create_error_messages(df):
 
     # Count errors by message (and stage if available)
     if stage_col:
-        # Group by message, pick the most common stage for each message
         grouped = error_df.groupby(error_col).agg(
             count=(error_col, 'size'),
             stage=(stage_col, lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else 'unknown'),
@@ -675,18 +668,16 @@ def create_error_messages(df):
         grouped.columns = ['message', 'count', 'stage', 'gis_count', 'non_gis_count']
         grouped = grouped.sort_values('count', ascending=False).head(8)
 
-        # Color map for stages
         stage_colors = {
-            'initialization': COLORS['chart'][0],     # red
-            'input_validation': COLORS['chart'][2],    # yellow
-            'workspace_creation': COLORS['chart'][5],  # orange
-            'ast_execution': COLORS['chart'][4],       # purple
-            'tenure_info': COLORS['chart'][3],         # blue
-            'admin_overlap': COLORS['chart'][1],       # green
+            'initialization': COLORS['chart'][0],
+            'input_validation': COLORS['chart'][2],
+            'workspace_creation': COLORS['chart'][5],
+            'ast_execution': COLORS['chart'][4],
+            'tenure_info': COLORS['chart'][3],
+            'admin_overlap': COLORS['chart'][1],
             'batch_run': COLORS['text_muted'],
         }
 
-        # Create figure with stage-colored bars
         fig = go.Figure()
         for _, row in grouped.iterrows():
             color = stage_colors.get(row['stage'], COLORS['error'])
@@ -715,7 +706,6 @@ def create_error_messages(df):
             margin={'l': 250, 'r': 100, 't': 50, 'b': 60},
         )
     else:
-        # Fallback: no stage info, simple bar chart (original behavior)
         errors = error_df[error_col].value_counts().head(8).reset_index()
         errors.columns = ['message', 'count']
         fig = px.bar(errors, x='count', y='message', orientation='h',
@@ -725,12 +715,9 @@ def create_error_messages(df):
     return fig
 
 def create_error_by_region(df):
-    """
-    Pie chart showing error distribution by region.
-    """
+    """Pie chart showing error distribution by region."""
     error_col = 'detail_error_message' if 'detail_error_message' in df.columns else 'error_message'
 
-    # Filter to rows with non-empty error messages
     mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
     error_df = df.loc[mask].copy()
 
@@ -802,7 +789,7 @@ def generate_html(df, metrics):
     from datetime import datetime
     from zoneinfo import ZoneInfo
     generated_at = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%Y-%m-%d %H:%M %Z')
-    
+
     # Create all charts
     charts = {
         'daily_trend': create_daily_trend(df).to_html(full_html=False, include_plotlyjs=False),
@@ -817,14 +804,14 @@ def generate_html(df, metrics):
         'feature_adoption': create_feature_adoption(df).to_html(full_html=False, include_plotlyjs=False),
         'prov_ref_region': create_prov_ref_by_region(df).to_html(full_html=False, include_plotlyjs=False),
     }
-    
+
     # Format duration values
     def format_duration(seconds):
         if seconds >= 60:
             mins = seconds / 60
             return f"{mins:.1f}m"
         return f"{seconds:.0f}s"
-    
+
     html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -838,7 +825,7 @@ def generate_html(df, metrics):
             padding: 0;
             box-sizing: border-box;
         }}
-        
+
         body {{
             font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: linear-gradient(135deg, {COLORS['bg_primary']} 0%, #0f0f1a 50%, {COLORS['bg_primary']} 100%);
@@ -846,29 +833,56 @@ def generate_html(df, metrics):
             min-height: 100vh;
             padding: 32px;
         }}
-        
+
         header {{
-            margin-bottom: 40px;
-            padding-bottom: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 32px;
+            padding-bottom: 20px;
             border-bottom: 1px solid rgba(233, 69, 96, 0.3);
         }}
-        
+
+        .header-left h1 {{
+            font-size: 42px;
+            font-weight: 700;
+            letter-spacing: -1px;
+            line-height: 1;
+        }}
+
+        .header-right {{
+            text-align: right;
+            flex-shrink: 0;
+        }}
+
+        .header-right .meta-line {{
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-bottom: 4px;
+        }}
+
+        .header-right .meta-line:last-child {{
+            margin-bottom: 0;
+        }}
+
         .status-indicator {{
             display: inline-block;
-            width: 12px;
-            height: 12px;
+            width: 10px;
+            height: 10px;
             background: {COLORS['success']};
             border-radius: 50%;
-            margin-right: 12px;
-            box-shadow: 0 0 12px {COLORS['success']};
+            box-shadow: 0 0 10px {COLORS['success']};
             animation: pulse 2s infinite;
+            flex-shrink: 0;
         }}
-        
+
         @keyframes pulse {{
             0%, 100% {{ opacity: 1; }}
             50% {{ opacity: 0.5; }}
         }}
-        
+
         .subtitle {{
             font-size: 11px;
             text-transform: uppercase;
@@ -876,18 +890,11 @@ def generate_html(df, metrics):
             color: {COLORS['text_muted']};
             font-family: monospace;
         }}
-        
-        h1 {{
-            font-size: 42px;
-            font-weight: 700;
-            letter-spacing: -1px;
-            margin-top: 8px;
-        }}
-        
+
         section {{
             margin-bottom: 48px;
         }}
-        
+
         .section-header {{
             font-size: 20px;
             text-transform: uppercase;
@@ -899,21 +906,21 @@ def generate_html(df, metrics):
             font-family: monospace;
             font-weight: 700;
         }}
-        
+
         .metrics-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 16px;
             margin-bottom: 24px;
         }}
-        
+
         .metric-card {{
             background: linear-gradient(135deg, {COLORS['bg_secondary']} 0%, {COLORS['bg_primary']} 100%);
             border: 1px solid rgba(233, 69, 96, 0.2);
             border-radius: 4px;
             padding: 20px;
         }}
-        
+
         .metric-card .label {{
             font-size: 11px;
             text-transform: uppercase;
@@ -922,14 +929,14 @@ def generate_html(df, metrics):
             margin-bottom: 8px;
             font-family: monospace;
         }}
-        
+
         .metric-card .value {{
             font-size: 32px;
             font-weight: 700;
             color: {COLORS['text']};
             margin-bottom: 4px;
         }}
-        
+
         .metric-card .card-subtitle {{
             font-size: 12px;
             color: {COLORS['text_muted']};
@@ -937,17 +944,17 @@ def generate_html(df, metrics):
             letter-spacing: 0;
             text-transform: none;
         }}
-        
+
         .charts-grid {{
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 16px;
         }}
-        
+
         .charts-grid-3 {{
             grid-template-columns: repeat(3, 1fr);
         }}
-        
+
         .chart-container {{
             background: linear-gradient(180deg, {COLORS['bg_secondary']} 0%, {COLORS['bg_primary']} 100%);
             border: 1px solid rgba(233, 69, 96, 0.15);
@@ -955,39 +962,50 @@ def generate_html(df, metrics):
             padding: 16px;
             overflow: hidden;
         }}
-        
+
         .chart-container .js-plotly-plot {{
             width: 100% !important;
         }}
-        
+
         .chart-container .plotly {{
             width: 100% !important;
         }}
-        
+
         footer {{
             text-align: center;
             padding-top: 24px;
             border-top: 1px solid rgba(233, 69, 96, 0.2);
         }}
-        
+
         footer p {{
             font-size: 11px;
             color: {COLORS['text_muted']};
             font-family: monospace;
             letter-spacing: 1px;
         }}
-        
+
         @media (max-width: 1200px) {{
             .charts-grid-3 {{
                 grid-template-columns: 1fr 1fr;
             }}
         }}
-        
+
         @media (max-width: 768px) {{
             body {{
                 padding: 16px;
             }}
-            h1 {{
+            header {{
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+            }}
+            .header-right {{
+                text-align: left;
+            }}
+            .header-right .meta-line {{
+                justify-content: flex-start;
+            }}
+            .header-left h1 {{
                 font-size: 28px;
             }}
             .charts-grid, .charts-grid-3 {{
@@ -998,16 +1016,20 @@ def generate_html(df, metrics):
 </head>
 <body>
     <header>
-        <div>
-            <span class="status-indicator"></span>
-            <span class="subtitle">Last Updated: {generated_at}</span>
+        <div class="header-left">
+            <h1>LDS Tool Usage Dashboard</h1>
         </div>
-        <div style="margin-top: 4px;">
-            <span class="subtitle" style="margin-left: 24px;">Data Period: {metrics['date_from']} to {metrics['date_to']}</span>
+        <div class="header-right">
+            <div class="meta-line">
+                <span class="subtitle">Last Updated: {generated_at}</span>
+                <span class="status-indicator"></span>
+            </div>
+            <div class="meta-line">
+                <span class="subtitle">Data Period: {metrics['date_from']} to {metrics['date_to']}</span>
+            </div>
         </div>
-        <h1>LDS Tool Usage Dashboard</h1>
     </header>
-    
+
     <!-- USAGE VOLUME -->
     <section>
         <h2 class="section-header">Usage Volume</h2>
@@ -1043,7 +1065,7 @@ def generate_html(df, metrics):
             <div class="chart-container">{charts['user_dist_non_gis']}</div>
         </div>
     </section>
-    
+
     <!-- PERFORMANCE & RELIABILITY -->
     <section>
         <h2 class="section-header">Performance & Reliability</h2>
@@ -1090,7 +1112,7 @@ def generate_html(df, metrics):
             <div class="chart-container" style="grid-column: span 2;">{charts['error_msgs']}</div>
         </div>
     </section>
-    
+
     <!-- FEATURE ADOPTION -->
     <section>
         <h2 class="section-header">Feature Adoption</h2>
@@ -1099,11 +1121,11 @@ def generate_html(df, metrics):
             <div class="chart-container">{charts['prov_ref_region']}</div>
         </div>
     </section>
-    
+
     <footer>
         <p>Tool Usage Analytics &bull; Data from monthly JSONL logs (summary + detail)</p>
     </footer>
-    
+
     <script>
         // Make all Plotly charts responsive
         window.addEventListener('resize', function() {{
@@ -1111,7 +1133,7 @@ def generate_html(df, metrics):
                 Plotly.Plots.resize(plot);
             }});
         }});
-        
+
         // Initial resize to fit containers
         window.addEventListener('load', function() {{
             setTimeout(function() {{
@@ -1123,7 +1145,7 @@ def generate_html(df, metrics):
     </script>
 </body>
 </html>'''
-    
+
     return html
 
 # =============================================================================
@@ -1133,41 +1155,41 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print("LDS Tool Usage Dashboard - HTML Generator")
     print("="*60)
-    
+
     # Load summary and detail data
     df_summary, df_detail = load_data()
-    
+
     # Clean usernames: strip IDIR prefix, normalize to uppercase
     df_summary['clean_user'] = df_summary['user_os'].apply(clean_username)
-    
+
     # Exclude developer test runs
     before = len(df_summary)
     df_summary = df_summary[~df_summary['clean_user'].isin(EXCLUDED_USERS)].copy()
     excluded = before - len(df_summary)
     if excluded > 0:
         print(f"\n✓ Excluded {excluded} developer test runs ({', '.join(EXCLUDED_USERS)})")
-    
+
     # Assign user groups (GIS vs Non-GIS)
     df_summary['user_group'] = df_summary['clean_user'].apply(assign_user_group)
     gis_n = (df_summary['user_group'] == GROUP_GIS).sum()
     non_gis_n = (df_summary['user_group'] == GROUP_NON_GIS).sum()
     print(f"✓ User groups: {gis_n} GIS runs, {non_gis_n} Non-GIS runs")
-    
+
     # Enrich error messages from detail logs
     df = enrich_errors_from_detail(df_summary, df_detail)
-    
+
     # Enrich AST duration from detail logs (stage-level timestamps)
     df = enrich_ast_duration(df, df_detail)
-    
+
     # Calculate metrics
     metrics = calculate_metrics(df)
-    
+
     # Generate HTML
     html_content = generate_html(df, metrics)
-    
+
     # Write to file
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html_content)
-    
+
     print(f"\n✓ Generated {OUTPUT_FILE}")
     print("="*60 + "\n")
