@@ -41,35 +41,3 @@ The dashboard reads two types of monthly JSONL log files from the NRS ObjectStor
 ├── requirements.txt           # Python dependencies
 └── README.md
 ```
-
-## Setup
-
-### Prerequisites
-
-- Python 3.11+
-- Access to the NRS S3-compatible ObjectStore
-
-### Local Development
-
-```bash
-pip install -r requirements.txt
-
-# Set environment variables
-export S3_NRS_ENDPOINT="your-endpoint"
-export S3_GSS_GEODRIVE_KEY_ID="your-key-id"
-export S3_GSS_GEODRIVE_SECRET_KEY="your-secret-key"
-
-python lds_usage_dashboard.py
-```
-
-The dashboard is generated at `./output/index.html`.
-
-### GitHub Actions
-
-The workflow runs nightly at 2:00 AM PST and deploys the updated dashboard to GitHub Pages. Three repository secrets must be configured under **Settings → Secrets and variables → Actions**:
-
-| Secret | Description |
-|---|---|
-| `S3_NRS_ENDPOINT` | S3-compatible endpoint URL |
-| `S3_GSS_GEODRIVE_KEY_ID` | Access key ID |
-| `S3_GSS_GEODRIVE_SECRET_KEY` | Secret access key |
