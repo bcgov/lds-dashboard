@@ -796,6 +796,53 @@ def create_error_by_region(df):
     return fig
 
 
+def create_error_stages(df):
+    """Donut chart showing error distribution by pipeline stage."""
+    stage_col = 'detail_error_stage' if 'detail_error_stage' in df.columns else None
+    if stage_col is None:
+        fig = go.Figure()
+        fig.add_annotation(text="No stage data", xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(**get_chart_layout('Top Error Stages', height=320))
+        return fig
+
+    error_col = 'detail_error_message'
+    mask = df[error_col].notna() & (df[error_col].astype(str).str.strip().str.len() > 0)
+    error_df = df.loc[mask].copy()
+
+    if len(error_df) == 0 or error_df[stage_col].isna().all():
+        fig = go.Figure()
+        fig.add_annotation(text="No errors recorded", xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(**get_chart_layout('Top Error Stages', height=320))
+        return fig
+
+    stage_counts = error_df[stage_col].value_counts().reset_index()
+    stage_counts.columns = ['stage', 'count']
+
+    # Use stage colors consistent with error messages chart
+    stage_colors = {
+        'initialization': COLORS['chart'][0],
+        'input_validation': COLORS['chart'][2],
+        'workspace_creation': COLORS['chart'][5],
+        'ast_execution': COLORS['chart'][4],
+        'tenure_info': COLORS['chart'][3],
+        'admin_overlap': COLORS['chart'][1],
+        'batch_run': COLORS['text_muted'],
+    }
+    colors = [stage_colors.get(s, COLORS['text_muted']) for s in stage_counts['stage']]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=stage_counts['stage'],
+        values=stage_counts['count'],
+        hole=0.4,
+        marker=dict(colors=colors),
+    )])
+    fig.update_layout(**get_chart_layout('Top Error Stages', height=320))
+    fig.update_traces(textposition='inside', textinfo='percent+label')
+    return fig
+
+
 def create_usage_heatmap(df):
     """Heatmap of run counts by day of week and hour of day."""
     df_copy = df.copy()
@@ -899,6 +946,7 @@ def generate_html(df, metrics):
         'status_dist': create_status_distribution(df).to_html(full_html=False, include_plotlyjs=False),
         'error_msgs': create_error_messages(df).to_html(full_html=False, include_plotlyjs=False),
         'error_region': create_error_by_region(df).to_html(full_html=False, include_plotlyjs=False),
+        'error_stages': create_error_stages(df).to_html(full_html=False, include_plotlyjs=False),
         'usage_heatmap': create_usage_heatmap(df).to_html(full_html=False, include_plotlyjs=False),
         'user_group_split': create_user_group_split(df).to_html(full_html=False, include_plotlyjs=False),
         'feature_adoption': create_feature_adoption(df).to_html(full_html=False, include_plotlyjs=False),
@@ -1205,9 +1253,10 @@ def generate_html(df, metrics):
         <div class="charts-grid" style="margin-top: 16px;">
             <div class="chart-container" style="grid-column: span 2;">{charts['failure_rate_trend']}</div>
         </div>
-        <div class="charts-grid" style="margin-top: 16px;">
+        <div class="charts-grid charts-grid-3" style="margin-top: 16px;">
             <div class="chart-container">{charts['status_dist']}</div>
             <div class="chart-container">{charts['error_region']}</div>
+            <div class="chart-container">{charts['error_stages']}</div>
         </div>
         <div class="charts-grid" style="margin-top: 16px;">
             <div class="chart-container" style="grid-column: span 2;">{charts['error_msgs']}</div>
