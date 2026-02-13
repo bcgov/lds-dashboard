@@ -796,6 +796,46 @@ def create_error_by_region(df):
     return fig
 
 
+def create_usage_heatmap(df):
+    """Heatmap of run counts by day of week and hour of day."""
+    df_copy = df.copy()
+    df_copy['day_of_week'] = df_copy['timestamp_start'].dt.day_name()
+    df_copy['hour'] = df_copy['timestamp_start'].dt.hour
+
+    # Exclude specific outlier dates
+    exclude_dates = [pd.Timestamp('2026-01-29')]
+    df_copy = df_copy[~df_copy['timestamp_start'].dt.normalize().isin(exclude_dates)]
+
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+    df_copy = df_copy[df_copy['day_of_week'].isin(day_order)]
+    df_copy = df_copy[df_copy['hour'].between(6, 18)]
+
+    pivot = df_copy.groupby(['day_of_week', 'hour']).size().reset_index(name='runs')
+    pivot = pivot.pivot(index='day_of_week', columns='hour', values='runs').fillna(0)
+    pivot = pivot.reindex(day_order)
+
+    # Fill missing hour columns (6-18)
+    for h in range(6, 19):
+        if h not in pivot.columns:
+            pivot[h] = 0
+    pivot = pivot[sorted(pivot.columns)]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=pivot.values,
+        x=[f'{h}:00' for h in pivot.columns],
+        y=pivot.index,
+        colorscale=[[0, COLORS['bg_secondary']], [0.5, COLORS['warning']], [1, COLORS['accent']]],
+        hovertemplate='%{y} at %{x}<br>Runs: %{z}<extra></extra>',
+    ))
+
+    fig.update_layout(**get_chart_layout('Peak Usage (Day × Hour)', height=320))
+    fig.update_layout(
+        xaxis_title='Hour of Day',
+        yaxis=dict(autorange='reversed'),
+    )
+    return fig
+
+
 def create_user_group_split(df):
     """Donut chart showing % of runs by GIS vs Non-GIS users."""
     group_counts = df['user_group'].value_counts().reset_index()
@@ -859,6 +899,7 @@ def generate_html(df, metrics):
         'status_dist': create_status_distribution(df).to_html(full_html=False, include_plotlyjs=False),
         'error_msgs': create_error_messages(df).to_html(full_html=False, include_plotlyjs=False),
         'error_region': create_error_by_region(df).to_html(full_html=False, include_plotlyjs=False),
+        'usage_heatmap': create_usage_heatmap(df).to_html(full_html=False, include_plotlyjs=False),
         'user_group_split': create_user_group_split(df).to_html(full_html=False, include_plotlyjs=False),
         'feature_adoption': create_feature_adoption(df).to_html(full_html=False, include_plotlyjs=False),
         'prov_ref_region': create_prov_ref_by_region(df).to_html(full_html=False, include_plotlyjs=False),
@@ -1119,9 +1160,10 @@ def generate_html(df, metrics):
             <div class="chart-container">{charts['region_dist']}</div>
             <div class="chart-container">{charts['user_group_split']}</div>
         </div>
-        <div class="charts-grid" style="margin-top: 16px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 0.7fr; gap: 16px; margin-top: 16px;">
             <div class="chart-container">{charts['user_dist_gis']}</div>
             <div class="chart-container">{charts['user_dist_non_gis']}</div>
+            <div class="chart-container">{charts['usage_heatmap']}</div>
         </div>
     </section>
 
