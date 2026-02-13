@@ -800,7 +800,8 @@ def create_prov_ref_by_region(df):
 def generate_html(df, metrics):
     """Generate complete HTML dashboard."""
     from datetime import datetime
-    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M')
+    from zoneinfo import ZoneInfo
+    generated_at = datetime.now(ZoneInfo('America/Los_Angeles')).strftime('%Y-%m-%d %H:%M %Z')
     
     # Create all charts
     charts = {
