@@ -59,7 +59,7 @@ COLORS = {
     'accent': '#e94560',
     'success': '#4ade80',
     'warning': '#fbbf24',
-    'error': '#ef4444',
+    'error': '#f03737',
     'text': '#e2e8f0',
     'text_muted': '#94a3b8',
     'chart': ['#e94560', '#4ade80', '#fbbf24', '#38bdf8', '#a78bfa', '#fb923c']
@@ -437,35 +437,87 @@ def create_weekly_trend(df):
     return fig
 
 def create_user_distribution_gis(df):
-    """Bar chart of runs by GIS users."""
+    """Bar chart of runs by GIS users (Top 10), broken down by status."""
     gis_df = df[df['user_group'] == GROUP_GIS]
     if gis_df.empty:
         fig = go.Figure()
         fig.add_annotation(text="No GIS user runs", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
         return fig
-    user_counts = gis_df['clean_user'].value_counts().head(10).reset_index()
-    user_counts.columns = ['user', 'count']
-    fig = px.bar(user_counts, x='count', y='user', orientation='h',
-                 color_discrete_sequence=[COLORS['chart'][3]])
-    fig.update_layout(**get_chart_layout('Runs by GIS Users', height=320))
-    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+
+    # Get top 10 users by total runs
+    top_users = gis_df['clean_user'].value_counts().head(10).index.tolist()
+    
+    # Filter to these users
+    df_top = gis_df[gis_df['clean_user'].isin(top_users)].copy()
+    
+    # Normalize status for color mapping
+    def normalize_status(s):
+        s = str(s).lower()
+        if 'success' in s: return 'success'
+        if 'warning' in s: return 'warning'
+        return 'error'
+        
+    df_top['status_group'] = df_top['status'].apply(normalize_status)
+    
+    # Aggregate by user and status_group
+    stats = df_top.groupby(['clean_user', 'status_group']).size().reset_index(name='count')
+    
+    # Ensure consistent colors
+    color_map = {'success': COLORS['success'], 'error': COLORS['error'], 'warning': COLORS['warning']}
+    
+    fig = px.bar(stats, x='count', y='clean_user', color='status_group', orientation='h',
+                 color_discrete_map=color_map,
+                 category_orders={'clean_user': top_users})
+    
+    fig.update_layout(**get_chart_layout('Runs by GIS Users (Status Breakdown)', height=320))
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        yaxis_title='user_idir',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, title=None)
+    )
     return fig
 
 def create_user_distribution_non_gis(df):
-    """Bar chart of runs by Non-GIS users."""
+    """Bar chart of runs by Non-GIS users (Top 10), broken down by status."""
     non_gis_df = df[df['user_group'] == GROUP_NON_GIS]
     if non_gis_df.empty:
         fig = go.Figure()
         fig.add_annotation(text="No Non-GIS user runs", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
         fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
         return fig
-    user_counts = non_gis_df['clean_user'].value_counts().head(10).reset_index()
-    user_counts.columns = ['user', 'count']
-    fig = px.bar(user_counts, x='count', y='user', orientation='h',
-                 color_discrete_sequence=[COLORS['chart'][5]])
-    fig.update_layout(**get_chart_layout('Runs by Non-GIS Users', height=320))
-    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+
+    # Get top 10 users by total runs
+    top_users = non_gis_df['clean_user'].value_counts().head(10).index.tolist()
+    
+    # Filter to these users
+    df_top = non_gis_df[non_gis_df['clean_user'].isin(top_users)].copy()
+    
+    # Normalize status for color mapping
+    def normalize_status(s):
+        s = str(s).lower()
+        if 'success' in s: return 'success'
+        if 'warning' in s: return 'warning'
+        return 'error'
+        
+    df_top['status_group'] = df_top['status'].apply(normalize_status)
+
+    # Aggregate by user and status_group
+    stats = df_top.groupby(['clean_user', 'status_group']).size().reset_index(name='count')
+    
+    # Ensure consistent colors
+    color_map = {'success': COLORS['success'], 'error': COLORS['error'], 'warning': COLORS['warning']}
+    
+    fig = px.bar(stats, x='count', y='clean_user', color='status_group', orientation='h',
+                 color_discrete_map=color_map,
+                 category_orders={'clean_user': top_users}) # Keep order consistent with total runs
+    
+    fig.update_layout(**get_chart_layout('Runs by Non-GIS Users (Status Breakdown)', height=320))
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        yaxis_title='user_idir',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, title=None)
+    )
     return fig
 
 def create_region_distribution(df):
